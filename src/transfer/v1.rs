@@ -79,57 +79,60 @@ pub(crate) async fn send(
     _peer_version: AppVersion,
     cancel: impl Future<Output = ()>,
 ) -> Result<(), TransferError> {
-    if offer.is_multiple() {
-        let folder = OfferSendEntry::Directory {
-            content: offer.content,
-        };
-        send_folder(
-            wormhole,
-            relay_hints,
-            "<unnamed folder>".into(),
-            folder,
-            transit_abilities,
-            transit_handler,
-            progress_handler,
-            cancel,
-        )
-        .await
-    } else if offer.is_directory() {
-        let (folder_name, folder) = offer.content.into_iter().next().unwrap();
-        send_folder(
-            wormhole,
-            relay_hints,
-            folder_name,
-            folder,
-            transit_abilities,
-            transit_handler,
-            progress_handler,
-            cancel,
-        )
-        .await
-    } else {
-        let (file_name, file) = offer.content.into_iter().next().unwrap();
-        let (mut file, file_size) = match file {
-            OfferSendEntry::RegularFile { content, size } => {
-                /* This must be split into two statements to appease the borrow checker (unfortunate side effect of borrow-through) */
-                let content = content();
-                let content = content.await?;
-                (content, size)
-            },
-            _ => unreachable!(),
-        };
-        send_file(
-            wormhole,
-            relay_hints,
-            &mut file,
-            file_name,
-            file_size,
-            transit_abilities,
-            transit_handler,
-            progress_handler,
-            cancel,
-        )
-        .await
+    match offer {
+        Offer::Files(ref content) => {
+            if offer.is_multiple() {
+                let folder = OfferSendEntry::Directory { content: *content };
+                send_folder(
+                    wormhole,
+                    relay_hints,
+                    "<unnamed folder>".into(),
+                    folder,
+                    transit_abilities,
+                    transit_handler,
+                    progress_handler,
+                    cancel,
+                )
+                .await
+            } else if offer.is_directory() {
+                let (folder_name, folder) = content.into_iter().next().unwrap();
+                send_folder(
+                    wormhole,
+                    relay_hints,
+                    folder_name.to_string(),
+                    *folder,
+                    transit_abilities,
+                    transit_handler,
+                    progress_handler,
+                    cancel,
+                )
+                .await
+            } else {
+                let (file_name, file) = content.into_iter().next().unwrap();
+                let (mut file, file_size) = match file {
+                    OfferSendEntry::RegularFile { content, size } => {
+                        /* This must be split into two statements to appease the borrow checker (unfortunate side effect of borrow-through) */
+                        let content = content();
+                        let content = content.await?;
+                        (content, size)
+                    },
+                    _ => unreachable!(),
+                };
+                // NOTE: this part probs important
+                send_file(
+                    wormhole,
+                    relay_hints,
+                    &mut file,
+                    file_name,
+                    *file_size,
+                    transit_abilities,
+                    transit_handler,
+                    progress_handler,
+                    cancel,
+                )
+                .await
+            }
+        },
     }
 }
 
@@ -527,7 +530,7 @@ impl ReceiveRequest {
             },
         );
 
-        let offer = Arc::new(Offer { content });
+        let offer = Arc::new(Offer::Files(content));
 
         #[expect(deprecated)]
         Self {

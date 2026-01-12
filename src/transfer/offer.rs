@@ -9,8 +9,8 @@ pub type OfferSend = Offer<OfferContent>;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(bound(deserialize = "T: Default"))]
-pub struct Offer<T = ()> {
-    pub(super) content: BTreeMap<String, OfferEntry<T>>,
+pub enum Offer<T = ()> {
+    Files(BTreeMap<String, OfferEntry<T>>),
 }
 
 impl OfferSend {
@@ -27,7 +27,7 @@ impl OfferSend {
         );
         let mut content = BTreeMap::new();
         content.insert(offer_name, OfferSendEntry::new(path).await?);
-        Ok(Self { content })
+        Ok(Offer::Files(content))
     }
 
     /// Offer list of paths (files and folders)
@@ -50,7 +50,7 @@ impl OfferSend {
             let old = content.insert(offer_name, OfferSendEntry::new(path).await?);
             assert!(old.is_none(), "Duplicate names found");
         }
-        Ok(Self { content })
+        Ok(Self::Files(content))
     }
 
     /// Offer a single file with custom content
@@ -60,29 +60,32 @@ impl OfferSend {
     pub fn new_file_custom(offer_name: String, size: u64, content: OfferContent) -> Self {
         let mut content_ = BTreeMap::new();
         content_.insert(offer_name, OfferSendEntry::RegularFile { size, content });
-        Self { content: content_ }
+        Self::Files(content_)
     }
 }
 
 impl<T> Offer<T> {
     pub fn top_level_paths(&self) -> impl Iterator<Item = &String> + '_ {
-        self.content.keys()
+        match self {
+            Self::Files(content) => content.keys(),
+        }
     }
 
     pub fn get(&self, path: &[String]) -> Option<&OfferEntry<T>> {
-        match path {
-            [] => None,
-            [start, rest @ ..] => self.content.get(start).and_then(|inner| inner.get(rest)),
+        match self {
+            Self::Files(content) => match path {
+                [] => None,
+                [start, rest @ ..] => content.get(start).and_then(|inner| inner.get(rest)),
+            },
         }
     }
 
     pub fn get_file(&self, path: &[String]) -> Option<(&T, u64)> {
-        match path {
-            [] => None,
-            [start, rest @ ..] => self
-                .content
-                .get(start)
-                .and_then(|inner| inner.get_file(rest)),
+        match self {
+            Self::Files(content) => match path {
+                [] => None,
+                [start, rest @ ..] => content.get(start).and_then(|inner| inner.get_file(rest)),
+            },
         }
     }
 
@@ -93,13 +96,15 @@ impl<T> Offer<T> {
 
     /** Recursively list all files, without directory names or symlinks. */
     pub fn iter_files(&self) -> impl Iterator<Item = (Vec<String>, &T, u64)> + '_ {
-        self.content.iter().flat_map(|(name, offer)| {
-            let name = name.clone();
-            offer.iter_files().map(move |mut val| {
-                val.0.insert(0, name.clone());
-                val
-            })
-        })
+        match self {
+            Self::Files(content) => content.iter().flat_map(|(name, offer)| {
+                let name = name.clone();
+                offer.iter_files().map(move |mut val| {
+                    val.0.insert(0, name.clone());
+                    val
+                })
+            }),
+        }
     }
 
     pub fn total_size(&self) -> u64 {
@@ -130,10 +135,14 @@ impl<T> Offer<T> {
     #[cfg(not(target_family = "wasm"))]
     pub async fn create_directories(&self, target_path: &Path) -> std::io::Result<()> {
         // TODO this could be made more efficient by passing around just one buffer
-        for (name, file) in &self.content {
-            file.create_directories(&target_path.join(name)).await?;
+        match self {
+            Self::Files(content) => {
+                for (name, file) in content {
+                    file.create_directories(&target_path.join(name)).await?;
+                }
+                Ok(())
+            },
         }
-        Ok(())
     }
 
     // #[cfg(not(target_family = "wasm"))]
@@ -146,39 +155,53 @@ impl<T> Offer<T> {
     // }
 
     pub fn offer_name(&self) -> String {
-        let (name, entry) = self.content.iter().next().unwrap();
-        if self.is_multiple() {
-            format!(
-                "{name} and {} other files or directories",
-                self.content.len() - 1
-            )
-        } else if self.is_directory() {
-            let count = entry.iter_files().count();
-            format!("{name} with {count} files inside")
-        } else {
-            name.clone()
+        match self {
+            Self::Files(content) => {
+                let (name, entry) = content.iter().next().unwrap();
+                if self.is_multiple() {
+                    format!(
+                        "{name} and {} other files or directories",
+                        content.len() - 1
+                    )
+                } else if self.is_directory() {
+                    let count = entry.iter_files().count();
+                    format!("{name} with {count} files inside")
+                } else {
+                    name.clone()
+                }
+            },
         }
     }
 
     pub fn is_multiple(&self) -> bool {
-        self.content.len() > 1
+        match self {
+            Offer::Files(content) => content.len() > 1,
+        }
     }
 
     pub fn is_directory(&self) -> bool {
-        self.is_multiple()
-            || self
-                .content
-                .values()
-                .any(|f| matches!(f, OfferEntry::Directory { .. }))
+        match self {
+            Offer::Files(content) => {
+                self.is_multiple()
+                    || content
+                        .values()
+                        .any(|f| matches!(f, OfferEntry::Directory { .. }))
+            },
+        }
     }
 
+    #[allow(unused)]
     pub fn set_content<U>(&self, mut f: impl FnMut(&[String]) -> U) -> Offer<U> {
-        Offer {
-            content: self
-                .content
-                .iter()
-                .map(|(k, v)| (k.clone(), v.set_content(&mut vec![k.clone()], &mut f)))
-                .collect(),
+        match self {
+            Offer::Files(content) => {
+                unreachable!();
+                // return content
+                // .iter()
+                // .map(|(k, v)| {
+                //     (k.clone(), v.set_content(&mut vec![k.clone()], &mut f))
+                // })
+                // .collect();
+            },
         }
     }
 }
@@ -186,12 +209,18 @@ impl<T> Offer<T> {
 impl<T: 'static + Send> Offer<T> {
     /** Recursively list all files, without directory names or symlinks. */
     pub fn into_iter_files(self) -> impl Iterator<Item = (Vec<String>, T, u64)> + Send {
-        self.content.into_iter().flat_map(|(name, offer)| {
-            offer.into_iter_files().map(move |mut val| {
-                val.0.insert(0, name.clone());
-                val
-            })
-        })
+        match self {
+            Self::Files(content) => {
+                content
+                    .into_iter()
+                    .flat_map(|(name, offer): (String, OfferEntry<T>)| {
+                        offer.into_iter_files().map(move |mut val| {
+                            val.0.insert(0, name.clone());
+                            val
+                        })
+                    })
+            },
+        }
     }
 }
 

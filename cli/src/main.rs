@@ -420,7 +420,7 @@ async fn main() -> eyre::Result<()> {
                     no_qr,
                 },
         } => {
-            let offer = make_send_offer(vec![], Some(file_name), Some(text)).await?;
+            let offer = make_send_offer(vec![], None, Some(text)).await?;
             let transit_abilities = parse_transit_args(&common);
             let (wormhole, _, relay_hints) = {
                 let connect_fut = Box::pin(parse_and_connect(
